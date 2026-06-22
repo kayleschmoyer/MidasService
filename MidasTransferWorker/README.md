@@ -8,6 +8,11 @@ Default configuration location
 - appsettings.json next to the executable (see MidasTransferWorker/appsettings.json included).
 - Values can be overridden using environment variables, e.g. MAVISSFTP__HOST for Host.
 
+Logging
+- The service logs only to the Windows Event Log, in a dedicated channel named "MidasTransferWorker".
+- View it in Event Viewer under: Applications and Services Logs > MidasTransferWorker
+- There are no log files on disk (the previous %ProgramData%\...\logs folder is no longer used).
+
 State file
 - Last successful run is stored at: %ProgramData%\MidasTransferService\state.json
 
