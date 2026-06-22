@@ -25,8 +25,8 @@ namespace MidasTransferWorker
                 .Enrich.WithProcessId()
                 .WriteTo.Console()
                 .WriteTo.File(Path.Combine(logDir, "midas-transfer-.log"), rollingInterval: RollingInterval.Day)
-                // The EventLog source is created at install time by Install-MidasTransferService.ps1,
-                // so we do not attempt to manage it at runtime (which would require admin rights).
+                // The EventLog source is created at install time by the MSI installer
+                // (WiX util:EventSource), so we do not manage it at runtime (which needs admin rights).
                 .WriteTo.EventLog("MidasTransferWorker", manageEventSource: false)
                 .MinimumLevel.Information()
                 .CreateLogger();

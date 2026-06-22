@@ -15,20 +15,20 @@ Processed / Quarantine folders
 - Successful uploads are moved to: %ProgramFiles(x86)%\MAM Software\MidasTransferService\Processed
 - Failed or errored files are moved to: %ProgramFiles(x86)%\MAM Software\MidasTransferService\Quarantine
 
-How to publish
+How to install (MSI - recommended)
+- The supported way to install is the WiX v5 MSI, which registers the Windows Service, creates the
+  EventLog source, and handles upgrades/uninstall. Build it with:
+    .\MidasTransferWorker\Installer\Build-Installer.ps1
+  then install elevated:
+    msiexec /i MidasTransferWorker.msi
+  See MidasTransferWorker/Installer/Readme-Installer.md for self-contained builds, silent install,
+  custom service accounts, and uninstall.
+- CI builds the MSI on windows-latest and uploads it as an artifact
+  (.github/workflows/build-installer.yml).
+
+How to publish manually (without the MSI)
 1. From the solution folder run: dotnet publish MidasTransferWorker -c Release -r win-x64 --self-contained false
    (Adjust runtime identifier as needed. If you want framework-dependent deployment, remove -r.)
-
-How to install as Windows Service (PowerShell):
-1. Copy published files to a folder, e.g. C:\Services\MidasTransferWorker
-2. Open an elevated PowerShell and run:
-   sc.exe create MidasTransferWorker binPath= "C:\\Services\\MidasTransferWorker\\MidasTransferWorker.exe" start= auto
-3. Start the service:
-   sc.exe start MidasTransferWorker
-4. Stop:
-   sc.exe stop MidasTransferWorker
-5. Delete service:
-   sc.exe delete MidasTransferWorker
 
 Configuration notes
 - appsettings.json contains a MavisSftp section with the following keys:

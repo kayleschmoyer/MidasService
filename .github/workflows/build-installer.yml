@@ -1,0 +1,42 @@
+name: Build Installer
+
+on:
+  push:
+    branches: [ main, "claude/**" ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build worker
+        run: dotnet build MidasTransferWorker/MidasTransferWorker.csproj -c Release
+
+      - name: Publish worker
+        run: dotnet publish MidasTransferWorker/MidasTransferWorker.csproj -c Release -r win-x64 --self-contained false -o publish
+
+      - name: Install WiX v5
+        run: |
+          dotnet tool install --global wix
+          wix extension add -g WixToolset.Util.wixext
+
+      - name: Build MSI
+        run: >
+          wix build MidasTransferWorker/Installer/Product.wxs
+          -d PublishedFolder="${{ github.workspace }}\publish"
+          -ext WixToolset.Util.wixext
+          -o MidasTransferWorker.msi
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MidasTransferWorker-msi
+          path: MidasTransferWorker.msi

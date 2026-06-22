@@ -1,86 +1,65 @@
 <#
 Build-Installer.ps1
-Builds an MSI using WiX Toolset v3.x (requires WiX installed).
 
-This script expects the project to be published first. It uses heat.exe to harvest the published output
-and then compiles the WiX sources to an MSI.
+Builds the MidasTransferWorker MSI using the WiX v5 .NET tool (no machine-wide WiX install
+and no heat.exe required). Publishes the worker first unless -PublishedFolder is supplied.
+
+Prerequisites:
+  - .NET 8 SDK on PATH (provides `dotnet`). The WiX v5 tool is installed automatically if missing.
 
 Usage:
-  .\Build-Installer.ps1 -PublishedFolder "C:\Services\MidasTransferWorker"
+  # Publish + build in one step (framework-dependent):
+  .\Build-Installer.ps1
 
-Parameters:
-  -PublishedFolder: the folder containing the published app (contains MidasTransferWorker.exe and DLLs)
-  -OutputMsi: optional path for the resulting MSI
+  # Self-contained (bundles the .NET runtime, no runtime prereq on the target):
+  .\Build-Installer.ps1 -SelfContained
+
+  # Build from an already-published folder:
+  .\Build-Installer.ps1 -PublishedFolder 'C:\Services\MidasTransferWorker' -OutputMsi 'C:\Temp\MidasTransferWorker.msi'
 #>
 
 param(
-	[Parameter(Mandatory=$true)]
-	[string]$PublishedFolder,
-	[string]$OutputMsi = "MidasTransferWorker.msi"
+    [string]$PublishedFolder,
+    [string]$OutputMsi = "MidasTransferWorker.msi",
+    [string]$Configuration = "Release",
+    [string]$Runtime = "win-x64",
+    [switch]$SelfContained
 )
 
-Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
 
-# Locate WiX bin - try typical install locations or PATH
-$possible = @(
-	"$env:ProgramFiles(x86)\WiX Toolset v3.14\bin",
-	"$env:ProgramFiles(x86)\WiX Toolset v3.11\bin",
-	"$env:ProgramFiles\WiX Toolset v3.14\bin",
-	"$env:ProgramFiles\WiX Toolset v3.11\bin"
-)
-
-$wixBin = $null
-foreach ($p in $possible) {
-	if (Test-Path $p) { $wixBin = $p; break }
-}
-
-if (-not $wixBin) {
-	# try to find heat.exe on PATH
-	$heatCmd = Get-Command heat.exe -ErrorAction SilentlyContinue
-	if ($heatCmd) {
-		$wixBin = Split-Path $heatCmd.Path
-	}
-}
-
-if (-not $wixBin) {
-	Write-Error "WiX bin not found. Ensure WiX Toolset is installed and heat.exe is on PATH."
-	exit 1
-}
-
-$heat = Join-Path $wixBin "heat.exe"
-$candle = Join-Path $wixBin "candle.exe"
-$light = Join-Path $wixBin "light.exe"
-
-if (-not (Test-Path $heat)) { Write-Error "heat.exe not found in $wixBin"; exit 1 }
-if (-not (Test-Path $candle)) { Write-Error "candle.exe not found in $wixBin"; exit 1 }
-if (-not (Test-Path $light)) { Write-Error "light.exe not found in $wixBin"; exit 1 }
-
-# prepare working folder
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-Push-Location $scriptDir
+$repoRoot = Resolve-Path (Join-Path $scriptDir "..\..")
+$projectPath = Join-Path $repoRoot "MidasTransferWorker"
 
-$harvestOut = "Components.wxs"
-if (Test-Path $harvestOut) { Remove-Item $harvestOut -Force }
+# Publish the worker if a published folder was not supplied.
+if (-not $PublishedFolder) {
+    $PublishedFolder = Join-Path $projectPath "bin\$Configuration\publish"
+    $sc = if ($SelfContained) { "true" } else { "false" }
+    Write-Host "Publishing worker to $PublishedFolder (self-contained=$sc) ..."
+    dotnet publish $projectPath -c $Configuration -r $Runtime --self-contained $sc -o $PublishedFolder
+    if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
+}
 
-# Exclude the main exe (we include it explicitly in Product.wxs)
-$exclude = "MidasTransferWorker.exe"
+if (-not (Test-Path (Join-Path $PublishedFolder "MidasTransferWorker.exe"))) {
+    throw "Published executable not found in: $PublishedFolder"
+}
 
-Write-Output "Harvesting published folder: $PublishedFolder"
-& $heat dir `"$PublishedFolder`" -gg -sfrag -scom -sreg -dr MIDASFOLDER -cg AppComponents -var var.PublishedFolder -out $harvestOut -xf $exclude
+# Ensure the WiX v5 tool is available.
+if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
+    Write-Host "Installing WiX v5 .NET tool (global) ..."
+    dotnet tool install --global wix
+    if ($LASTEXITCODE -ne 0) { throw "Failed to install the WiX tool" }
+}
 
-if ($LASTEXITCODE -ne 0) { Write-Error "heat failed"; Pop-Location; exit 1 }
+# Register the Util extension (idempotent) - provides util:EventSource.
+wix extension add -g WixToolset.Util.wixext | Out-Null
 
-# Compile WiX sources
-Write-Output "Compiling WiX sources..."
-& $candle Product.wxs $harvestOut -dPublishedFolder=`"$PublishedFolder`"
-if ($LASTEXITCODE -ne 0) { Write-Error "candle failed"; Pop-Location; exit 1 }
+Write-Host "Building MSI ..."
+wix build (Join-Path $scriptDir "Product.wxs") `
+    -d PublishedFolder="$PublishedFolder" `
+    -ext WixToolset.Util.wixext `
+    -o $OutputMsi
+if ($LASTEXITCODE -ne 0) { throw "wix build failed" }
 
-# Link to MSI
-Write-Output "Linking MSI..."
-& $light -ext WixUtilExtension -ext WixUIExtension Product.wixobj Components.wixobj -out $OutputMsi
-if ($LASTEXITCODE -ne 0) { Write-Error "light failed"; Pop-Location; exit 1 }
-
-Write-Output "MSI created: $OutputMsi"
-Pop-Location
-
-*** End Patch
+Write-Host "MSI created: $OutputMsi"
