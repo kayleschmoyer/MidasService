@@ -1,0 +1,17 @@
+.vs/
+bin/
+obj/
+**/bin/
+**/obj/
+*.user
+*.suo
+*.log
+*.pdb
+
+Releases/
+**/publish/
+*.zip
+*.msi
+
+appsettings.Development.json
+*.secret.json
