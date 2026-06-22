@@ -3,8 +3,12 @@ name: Build Installer
 on:
   push:
     branches: [ main, "claude/**" ]
+    tags: [ 'v*' ]
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: write   # allow attaching the MSI to a GitHub Release on tag pushes
 
 jobs:
   build:
@@ -20,8 +24,10 @@ jobs:
       - name: Build worker
         run: dotnet build MidasTransferWorker/MidasTransferWorker.csproj -c Release
 
-      - name: Publish worker
-        run: dotnet publish MidasTransferWorker/MidasTransferWorker.csproj -c Release -r win-x64 --self-contained false -o publish
+      # Self-contained: the published output bundles the .NET 8 runtime, so the resulting MSI
+      # installs and runs on a clean Windows machine with no .NET install required.
+      - name: Publish worker (self-contained)
+        run: dotnet publish MidasTransferWorker/MidasTransferWorker.csproj -c Release -r win-x64 --self-contained true -o publish
 
       - name: Install WiX v5
         run: |
@@ -35,8 +41,17 @@ jobs:
           -ext WixToolset.Util.wixext
           -o MidasTransferWorker.msi
 
+      # Downloadable from the run's Artifacts section (requires being signed in to GitHub).
       - name: Upload MSI artifact
         uses: actions/upload-artifact@v4
         with:
           name: MidasTransferWorker-msi
           path: MidasTransferWorker.msi
+
+      # On a version tag (e.g. v1.0.0) publish a GitHub Release with the MSI attached,
+      # giving a clean permanent download link to hand to an operator.
+      - name: Attach MSI to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: MidasTransferWorker.msi
