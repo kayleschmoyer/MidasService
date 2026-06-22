@@ -25,8 +25,8 @@ jobs:
 
       - name: Install WiX v5
         run: |
-          dotnet tool install --global wix
-          wix extension add -g WixToolset.Util.wixext
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add -g WixToolset.Util.wixext/5.0.2
 
       - name: Build MSI
         run: >

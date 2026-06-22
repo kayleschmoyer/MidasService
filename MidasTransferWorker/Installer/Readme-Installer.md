@@ -8,11 +8,12 @@ supported installation mechanism for this service.
 - .NET 8 SDK (provides `dotnet`).
 - The WiX v5 tool, installed automatically by the build script. To install it manually:
   ```
-  dotnet tool install --global wix
-  wix extension add -g WixToolset.Util.wixext
+  dotnet tool install --global wix --version 5.0.2
+  wix extension add -g WixToolset.Util.wixext/5.0.2
   ```
   WiX v5 is a .NET tool — there is no separate WiX Toolset MSI to install, and `heat.exe` is not
-  needed (the directory tree is harvested at build time by the `<Files>` element).
+  needed (the directory tree is harvested at build time by the `<Files>` element). We pin v5
+  because v6/v7 require accepting the Open Source Maintenance Fee (OSMF) EULA.
 
 ## Build the MSI
 From any shell with `dotnet` on PATH:

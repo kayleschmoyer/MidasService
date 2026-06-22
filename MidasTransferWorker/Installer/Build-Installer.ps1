@@ -45,15 +45,16 @@ if (-not (Test-Path (Join-Path $PublishedFolder "MidasTransferWorker.exe"))) {
     throw "Published executable not found in: $PublishedFolder"
 }
 
-# Ensure the WiX v5 tool is available.
+# Ensure the WiX v5 tool is available. WiX v5 is the last release under the fully open license;
+# v6/v7 require accepting the Open Source Maintenance Fee (OSMF) EULA, so we pin v5.
 if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
     Write-Host "Installing WiX v5 .NET tool (global) ..."
-    dotnet tool install --global wix
+    dotnet tool install --global wix --version 5.0.2
     if ($LASTEXITCODE -ne 0) { throw "Failed to install the WiX tool" }
 }
 
-# Register the Util extension (idempotent) - provides util:EventSource.
-wix extension add -g WixToolset.Util.wixext | Out-Null
+# Register the Util extension (idempotent) - provides util:EventSource. Pin to match the v5 engine.
+wix extension add -g WixToolset.Util.wixext/5.0.2 | Out-Null
 
 Write-Host "Building MSI ..."
 wix build (Join-Path $scriptDir "Product.wxs") `
