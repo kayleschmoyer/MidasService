@@ -17,7 +17,7 @@
     <!-- Service account. Override at install time, e.g.:
          msiexec /i MidasTransferWorker.msi /qn SERVICEACCOUNT="DOMAIN\\svc" SERVICEPASSWORD="..." -->
     <Property Id="SERVICEACCOUNT" Value="LocalSystem" />
-    <Property Id="SERVICEPASSWORD" Value="" Hidden="yes" />
+    <Property Id="SERVICEPASSWORD" Hidden="yes" />
 
     <!-- Install under Program Files (x86)\MAM Software\MidasTransferService to match the
          service's own Processed/Quarantine pathing (Environment.SpecialFolder.ProgramFilesX86). -->
@@ -66,8 +66,10 @@
          directory tree at build time, so no heat.exe step is required. The exe and appsettings
          are excluded because they are declared explicitly above. -->
     <ComponentGroup Id="PublishedFiles" Directory="MIDASFOLDER">
-      <Files Include="$(var.PublishedFolder)\**"
-             Exclude="$(var.PublishedFolder)\MidasTransferWorker.exe;$(var.PublishedFolder)\appsettings.json" />
+      <Files Include="$(var.PublishedFolder)\**">
+        <Exclude Files="$(var.PublishedFolder)\MidasTransferWorker.exe" />
+        <Exclude Files="$(var.PublishedFolder)\appsettings.json" />
+      </Files>
     </ComponentGroup>
 
     <Feature Id="Main" Title="Midas Transfer Worker" Level="1">
