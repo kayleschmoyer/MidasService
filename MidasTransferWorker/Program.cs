@@ -23,8 +23,11 @@ namespace MidasTransferWorker
                 .Enrich.FromLogContext()
                 .Enrich.WithMachineName()
                 .Enrich.WithProcessId()
+                .WriteTo.Console()
                 .WriteTo.File(Path.Combine(logDir, "midas-transfer-.log"), rollingInterval: RollingInterval.Day)
-                .WriteTo.EventLog("MidasTransferWorker", manageEventSource: true)
+                // The EventLog source is created at install time by Install-MidasTransferService.ps1,
+                // so we do not attempt to manage it at runtime (which would require admin rights).
+                .WriteTo.EventLog("MidasTransferWorker", manageEventSource: false)
                 .MinimumLevel.Information()
                 .CreateLogger();
 
@@ -45,12 +48,7 @@ namespace MidasTransferWorker
 
                     services.AddHostedService<Worker>();
                 })
-                .UseWindowsService()
-                .ConfigureLogging((hostingContext, logging) =>
-                {
-                    logging.AddConsole();
-                    logging.AddEventLog();
-                });
+                .UseWindowsService();
 
             var host = builder.Build();
             try
