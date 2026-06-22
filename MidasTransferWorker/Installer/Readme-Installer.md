@@ -51,7 +51,9 @@ msiexec /x MidasTransferWorker.msi /qn
   Processed/Quarantine pathing).
 - Registers and starts the `MidasTransferWorker` Windows Service (`ServiceInstall`/`ServiceControl`),
   running as `LocalSystem` by default (override via `SERVICEACCOUNT`/`SERVICEPASSWORD`).
-- Creates the `MidasTransferWorker` EventLog source so the service can write to the Application log.
+- Creates a dedicated `MidasTransferWorker` Event Log channel (and its source) so the service logs
+  appear in Event Viewer under "Applications and Services Logs > MidasTransferWorker" rather than the
+  shared Application log. The service writes no log files to disk.
 - Preserves `appsettings.json` across upgrades (`NeverOverwrite`), so operator edits and any
   `MAVISSFTP__*` configuration are not clobbered. Keep the SFTP password out of `appsettings.json`
   in production — set it via the `MAVISSFTP__PASSWORD` environment variable.
@@ -59,6 +61,6 @@ msiexec /x MidasTransferWorker.msi /qn
 ## Notes
 - The service account defaults to `LocalSystem`. For least privilege, install under a dedicated
   domain or virtual service account and grant it Modify rights to the install folder and the
-  `%ProgramData%\MidasTransferService` log/state folder.
+  `%ProgramData%\MidasTransferService` state folder.
 - `UpgradeCode` is fixed (`B8E1F2A4-3C5D-4E6F-9A0B-1C2D3E4F5A6B`); keep it stable across releases and
   bump `Version` in `Product.wxs` for each new build so upgrades are detected.

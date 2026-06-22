@@ -3,7 +3,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Serilog;
-using System.IO;
 using Microsoft.Extensions.Configuration;
 using MidasTransferWorker.Models;
 using MidasTransferWorker.Services;
@@ -14,20 +13,19 @@ namespace MidasTransferWorker
     {
         public static void Main(string[] args)
         {
-            // configure Serilog for file + EventLog sinks with enrichment
-            var programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-            var logDir = Path.Combine(programData, "MidasTransferService", "logs");
-            Directory.CreateDirectory(logDir);
-
+            // Log to a dedicated Windows Event Log channel ("MidasTransferWorker"), which appears
+            // under Event Viewer > Applications and Services Logs. The log and its source are created
+            // at install time by the MSI (WiX util:EventSource), so we do not manage them at runtime
+            // (which would require admin rights). Console is kept for interactive/debug runs.
             Log.Logger = new LoggerConfiguration()
                 .Enrich.FromLogContext()
                 .Enrich.WithMachineName()
                 .Enrich.WithProcessId()
                 .WriteTo.Console()
-                .WriteTo.File(Path.Combine(logDir, "midas-transfer-.log"), rollingInterval: RollingInterval.Day)
-                // The EventLog source is created at install time by the MSI installer
-                // (WiX util:EventSource), so we do not manage it at runtime (which needs admin rights).
-                .WriteTo.EventLog("MidasTransferWorker", manageEventSource: false)
+                .WriteTo.EventLog(
+                    source: "MidasTransferWorker",
+                    logName: "MidasTransferWorker",
+                    manageEventSource: false)
                 .MinimumLevel.Information()
                 .CreateLogger();
 

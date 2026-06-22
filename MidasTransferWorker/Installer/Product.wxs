@@ -49,9 +49,11 @@
                         Remove="uninstall"
                         Wait="yes" />
 
-        <!-- Pre-create the EventLog source so the service (manageEventSource:false) can write to it. -->
+        <!-- Pre-create a dedicated EventLog channel + source so the service (manageEventSource:false)
+             can write to it. Using a non-standard Log name makes it appear in Event Viewer under
+             "Applications and Services Logs" instead of the shared Application log. -->
         <util:EventSource Name="MidasTransferWorker"
-                          Log="Application"
+                          Log="MidasTransferWorker"
                           EventMessageFile="%SystemRoot%\Microsoft.NET\Framework64\v4.0.30319\EventLogMessages.dll" />
       </Component>
 
