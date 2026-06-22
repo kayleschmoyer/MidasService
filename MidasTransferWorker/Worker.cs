@@ -167,6 +167,9 @@ namespace MidasTransferWorker
                                         dest = Path.Combine(processedDir, DateTime.Now.ToString("yyyyMMddHHmmss") + "_" + Path.GetFileName(file));
                                     }
                                     File.Move(file, dest);
+                                    // Stamp with the processed time so retention measures age-since-processed,
+                                    // not the file's original modification time (which File.Move preserves).
+                                    File.SetLastWriteTimeUtc(dest, DateTime.UtcNow);
                                     _logger.LogInformation("Moved uploaded file to processed folder: {Dest}", dest);
                                 }
                                 catch (Exception ex)
@@ -188,6 +191,7 @@ namespace MidasTransferWorker
                                     dest = Path.Combine(quarantineDir, DateTime.Now.ToString("yyyyMMddHHmmss") + "_" + Path.GetFileName(file));
                                 }
                                 File.Move(file, dest);
+                                File.SetLastWriteTimeUtc(dest, DateTime.UtcNow);
                                 _logger.LogInformation("Moved failed file to quarantine: {Dest}", dest);
                             }
                             catch (Exception ex)
@@ -209,6 +213,7 @@ namespace MidasTransferWorker
                                 dest = Path.Combine(quarantineDir, DateTime.Now.ToString("yyyyMMddHHmmss") + "_" + Path.GetFileName(file));
                             }
                             File.Move(file, dest);
+                            File.SetLastWriteTimeUtc(dest, DateTime.UtcNow);
                             _logger.LogInformation("Moved errored file to quarantine: {Dest}", dest);
                         }
                         catch (Exception moveEx)
@@ -216,6 +221,17 @@ namespace MidasTransferWorker
                             _logger.LogWarning(moveEx, "Failed to move errored file to quarantine: {File}", file);
                         }
                     }
+                }
+
+                // Always apply quarantine retention so failed files don't accumulate indefinitely.
+                var quarantineRetention = await _retentionService.ApplyRetentionAsync(quarantineDir, cfg.QuarantineRetentionDays);
+                if (!string.IsNullOrEmpty(quarantineRetention.Error))
+                {
+                    _logger.LogWarning("Quarantine retention reported an error: {Error}", quarantineRetention.Error);
+                }
+                else if (quarantineRetention.DeletedFiles > 0)
+                {
+                    _logger.LogInformation("Quarantine retention deleted {Count} files", quarantineRetention.DeletedFiles);
                 }
 
                 // Only persist success if there were no failures (you may choose different logic)

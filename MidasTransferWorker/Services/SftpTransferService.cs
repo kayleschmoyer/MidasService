@@ -7,36 +7,98 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using MidasTransferWorker.Models;
 using Renci.SshNet;
+using Renci.SshNet.Common;
 using Renci.SshNet.Sftp;
 using Polly;
 using Polly.Retry;
 
 namespace MidasTransferWorker.Services
 {
-    public class SftpTransferService : ISftpTransferService, IDisposable
+    public class SftpTransferService : ISftpTransferService
     {
-        private readonly MavisSftpSettings _settings;
+        private readonly IOptionsMonitor<MavisSftpSettings> _options;
         private readonly ILogger<SftpTransferService> _logger;
 
-        public SftpTransferService(IOptions<MavisSftpSettings> opts, ILogger<SftpTransferService> logger)
+        public SftpTransferService(IOptionsMonitor<MavisSftpSettings> options, ILogger<SftpTransferService> logger)
         {
-            _settings = opts.Value;
+            // Resolve configuration on each use (via CurrentValue) so reloadOnChange edits to
+            // host/credentials/remote folder take effect without restarting the service.
+            _options = options;
             _logger = logger;
         }
 
-        private SftpClient CreateClient()
+        private SftpClient CreateClient(MavisSftpSettings settings)
         {
-            var connInfo = new ConnectionInfo(_settings.Host, _settings.Port, _settings.Username,
-                new PasswordAuthenticationMethod(_settings.Username, _settings.Password ?? string.Empty));
-            return new SftpClient(connInfo);
+            var connInfo = new ConnectionInfo(settings.Host, settings.Port, settings.Username,
+                new PasswordAuthenticationMethod(settings.Username, settings.Password ?? string.Empty));
+
+            var client = new SftpClient(connInfo);
+
+            // Verify the server's host key to defend against man-in-the-middle attacks.
+            client.HostKeyReceived += (sender, e) => ValidateHostKey(settings, e);
+
+            return client;
+        }
+
+        private void ValidateHostKey(MavisSftpSettings settings, HostKeyEventArgs e)
+        {
+            var configured = settings.HostKeyFingerprints?
+                .Where(f => !string.IsNullOrWhiteSpace(f))
+                .Select(NormalizeFingerprint)
+                .ToList();
+
+            if (configured == null || configured.Count == 0)
+            {
+                // No pin configured: we cannot authenticate the server. Allow the connection but warn
+                // loudly so operators know to pin the fingerprint. (SHA256 logged so it can be copied.)
+                _logger.LogWarning(
+                    "SFTP host key is NOT being verified because no HostKeyFingerprints are configured. " +
+                    "Server {Host}:{Port} presented key SHA256:{Sha256}. Add this to MavisSftp:HostKeyFingerprints to enable verification.",
+                    settings.Host, settings.Port, e.FingerPrintSHA256);
+                e.CanTrust = true;
+                return;
+            }
+
+            var presentedSha256 = NormalizeFingerprint("SHA256:" + e.FingerPrintSHA256);
+            var presentedMd5 = NormalizeFingerprint(BitConverter.ToString(e.FingerPrint).Replace("-", ":"));
+
+            bool trusted = configured.Contains(presentedSha256) || configured.Contains(presentedMd5);
+            e.CanTrust = trusted;
+
+            if (!trusted)
+            {
+                _logger.LogError(
+                    "SFTP host key verification FAILED for {Host}:{Port}. Presented SHA256:{Sha256} does not match any configured fingerprint. Connection rejected.",
+                    settings.Host, settings.Port, e.FingerPrintSHA256);
+            }
+        }
+
+        private static string NormalizeFingerprint(string fingerprint)
+        {
+            if (string.IsNullOrWhiteSpace(fingerprint)) return string.Empty;
+
+            var value = fingerprint.Trim();
+
+            // Strip an algorithm prefix such as "SHA256:" or "MD5:".
+            var colonPrefix = value.IndexOf(':');
+            if (colonPrefix > 0 && colonPrefix <= 6 &&
+                (value.StartsWith("SHA256", StringComparison.OrdinalIgnoreCase) ||
+                 value.StartsWith("MD5", StringComparison.OrdinalIgnoreCase)))
+            {
+                value = value.Substring(colonPrefix + 1);
+            }
+
+            // SSH.NET reports SHA256 fingerprints without trailing base64 padding; normalise both ways.
+            return value.TrimEnd('=').ToLowerInvariant();
         }
 
         public async Task<ConnectionCheckResult> VerifyConnectionAsync(CancellationToken cancellationToken)
         {
+            var settings = _options.CurrentValue;
             try
             {
-                using var client = CreateClient();
-                client.Connect();
+                using var client = CreateClient(settings);
+                await client.ConnectAsync(cancellationToken).ConfigureAwait(false);
                 if (!client.IsConnected)
                 {
                     return new ConnectionCheckResult { Ok = false, ErrorMessage = "Unable to connect to SFTP server." };
@@ -45,15 +107,15 @@ namespace MidasTransferWorker.Services
                 // try ensure remote folder exists or create it
                 try
                 {
-                    if (!client.Exists(_settings.RemoteFolder))
+                    if (!client.Exists(settings.RemoteFolder))
                     {
-                        client.CreateDirectory(_settings.RemoteFolder);
-                        _logger.LogInformation("Created remote folder {RemoteFolder}", _settings.RemoteFolder);
+                        client.CreateDirectory(settings.RemoteFolder);
+                        _logger.LogInformation("Created remote folder {RemoteFolder}", settings.RemoteFolder);
                     }
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Could not verify or create remote folder {RemoteFolder}", _settings.RemoteFolder);
+                    _logger.LogWarning(ex, "Could not verify or create remote folder {RemoteFolder}", settings.RemoteFolder);
                     return new ConnectionCheckResult { Ok = false, ErrorMessage = "Connected but failed to verify/create remote folder: " + ex.Message };
                 }
 
@@ -69,8 +131,9 @@ namespace MidasTransferWorker.Services
 
         public async Task<UploadResult> UploadFileAsync(string localFilePath, CancellationToken cancellationToken)
         {
+            var settings = _options.CurrentValue;
             var fileName = Path.GetFileName(localFilePath);
-            var remoteFinal = CombineRemote(_settings.RemoteFolder, fileName);
+            var remoteFinal = CombineRemote(settings.RemoteFolder, fileName);
             var remoteTemp = remoteFinal + ".part";
 
             try
@@ -94,17 +157,17 @@ namespace MidasTransferWorker.Services
                 await retryPolicy.ExecuteAsync(async ct =>
                 {
                     // create a fresh client for each attempt to avoid reusing a broken connection
-                    using var client = CreateClient();
-                    client.Connect();
+                    using var client = CreateClient(settings);
+                    await client.ConnectAsync(ct).ConfigureAwait(false);
                     if (!client.IsConnected)
                     {
-                        throw new Exception("Unable to connect to SFTP.");
+                        throw new SshConnectionException("Unable to connect to SFTP.");
                     }
 
                     // Check existence
                     if (client.Exists(remoteFinal))
                     {
-                        if (_settings.OverwriteRemoteFiles)
+                        if (settings.OverwriteRemoteFiles)
                         {
                             _logger.LogInformation("Remote file exists, will overwrite: {Remote}", remoteFinal);
                         }
@@ -116,14 +179,17 @@ namespace MidasTransferWorker.Services
                         }
                     }
 
-                    using (var fileStream = File.OpenRead(localFilePath))
-                    {
-                        // Ensure remote folder exists
-                        EnsureRemoteFolder(client, _settings.RemoteFolder);
+                    // Ensure remote folder exists
+                    EnsureRemoteFolder(client, settings.RemoteFolder);
 
-                        fileStream.Seek(0, SeekOrigin.Begin);
-                        // Upload synchronously inside a Task to avoid blocking callers
-                        await Task.Run(() => client.UploadFile(fileStream, remoteTemp, true), ct);
+                    try
+                    {
+                        using (var fileStream = File.OpenRead(localFilePath))
+                        {
+                            fileStream.Seek(0, SeekOrigin.Begin);
+                            // SSH.NET's UploadFile is synchronous; run it off the calling thread.
+                            await Task.Run(() => client.UploadFile(fileStream, remoteTemp, true), ct).ConfigureAwait(false);
+                        }
 
                         // rename temp to final (overwrite if allowed)
                         if (client.Exists(remoteFinal))
@@ -131,6 +197,12 @@ namespace MidasTransferWorker.Services
                             client.DeleteFile(remoteFinal);
                         }
                         client.RenameFile(remoteTemp, remoteFinal);
+                    }
+                    catch
+                    {
+                        // Don't leave a partial ".part" file orphaned on the server.
+                        TryDeleteRemote(client, remoteTemp);
+                        throw;
                     }
 
                     success = true;
@@ -152,6 +224,22 @@ namespace MidasTransferWorker.Services
             {
                 _logger.LogError(ex, "Upload failed for {File} (password not logged)", localFilePath);
                 return new UploadResult { Success = false, ErrorMessage = ex.Message };
+            }
+        }
+
+        private void TryDeleteRemote(SftpClient client, string remotePath)
+        {
+            try
+            {
+                if (client.IsConnected && client.Exists(remotePath))
+                {
+                    client.DeleteFile(remotePath);
+                    _logger.LogInformation("Cleaned up orphaned temporary remote file {Remote}", remotePath);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to clean up temporary remote file {Remote}", remotePath);
             }
         }
 
@@ -180,12 +268,15 @@ namespace MidasTransferWorker.Services
 
         private bool IsTransient(Exception ex)
         {
-            // naive transient detection: network/socket or simple IO on the connection
-            return ex is System.Net.Sockets.SocketException || ex is TimeoutException || ex is SshException;
-        }
-
-        public void Dispose()
-        {
+            // Treat network/connection/IO disruptions as transient and retryable.
+            return ex is System.Net.Sockets.SocketException
+                || ex is TimeoutException
+                || ex is SshConnectionException
+                || ex is SshOperationTimeoutException
+                || ex is ProxyException
+                || ex is IOException
+                || ex is ObjectDisposedException
+                || ex is SshException;
         }
     }
 }
