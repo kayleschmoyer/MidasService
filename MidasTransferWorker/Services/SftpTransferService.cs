@@ -134,7 +134,6 @@ namespace MidasTransferWorker.Services
             var settings = _options.CurrentValue;
             var fileName = Path.GetFileName(localFilePath);
             var remoteFinal = CombineRemote(settings.RemoteFolder, fileName);
-            var remoteTemp = remoteFinal + ".part";
 
             try
             {
@@ -164,45 +163,22 @@ namespace MidasTransferWorker.Services
                         throw new SshConnectionException("Unable to connect to SFTP.");
                     }
 
-                    // Check existence
-                    if (client.Exists(remoteFinal))
+                    // Skip if the remote file already exists and we're not overwriting.
+                    if (!settings.OverwriteRemoteFiles && client.Exists(remoteFinal))
                     {
-                        if (settings.OverwriteRemoteFiles)
-                        {
-                            _logger.LogInformation("Remote file exists, will overwrite: {Remote}", remoteFinal);
-                        }
-                        else
-                        {
-                            _logger.LogInformation("Remote file exists, skipping: {Remote}", remoteFinal);
-                            skipped = true;
-                            return; // success for policy (no exception) -> no retry
-                        }
+                        _logger.LogInformation("Remote file exists, skipping: {Remote}", remoteFinal);
+                        skipped = true;
+                        return; // success for policy (no exception) -> no retry
                     }
 
-                    // Ensure remote folder exists
-                    EnsureRemoteFolder(client, settings.RemoteFolder);
-
-                    try
+                    // Upload straight to the final filename. Many managed/vendor "drop" folders only
+                    // accept the final file and reject temporary names or rename operations, so we do
+                    // NOT upload to a ".part" temp file and rename.
+                    using (var fileStream = File.OpenRead(localFilePath))
                     {
-                        using (var fileStream = File.OpenRead(localFilePath))
-                        {
-                            fileStream.Seek(0, SeekOrigin.Begin);
-                            // SSH.NET's UploadFile is synchronous; run it off the calling thread.
-                            await Task.Run(() => client.UploadFile(fileStream, remoteTemp, true), ct).ConfigureAwait(false);
-                        }
-
-                        // rename temp to final (overwrite if allowed)
-                        if (client.Exists(remoteFinal))
-                        {
-                            client.DeleteFile(remoteFinal);
-                        }
-                        client.RenameFile(remoteTemp, remoteFinal);
-                    }
-                    catch
-                    {
-                        // Don't leave a partial ".part" file orphaned on the server.
-                        TryDeleteRemote(client, remoteTemp);
-                        throw;
+                        // SSH.NET's UploadFile is synchronous; run it off the calling thread.
+                        // canOverride: true so a re-run can replace a partial/previous file.
+                        await Task.Run(() => client.UploadFile(fileStream, remoteFinal, true), ct).ConfigureAwait(false);
                     }
 
                     success = true;
@@ -227,47 +203,21 @@ namespace MidasTransferWorker.Services
             }
         }
 
-        private void TryDeleteRemote(SftpClient client, string remotePath)
-        {
-            try
-            {
-                if (client.IsConnected && client.Exists(remotePath))
-                {
-                    client.DeleteFile(remotePath);
-                    _logger.LogInformation("Cleaned up orphaned temporary remote file {Remote}", remotePath);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to clean up temporary remote file {Remote}", remotePath);
-            }
-        }
-
         private static string CombineRemote(string folder, string file)
         {
             if (string.IsNullOrEmpty(folder)) return file;
             return folder.TrimEnd('/') + "/" + file;
         }
 
-        private void EnsureRemoteFolder(SftpClient client, string remoteFolder)
-        {
-            if (client.Exists(remoteFolder)) return;
-
-            // create nested folders
-            var parts = remoteFolder.Trim('/').Split('/');
-            var path = "";
-            foreach (var part in parts)
-            {
-                path += "/" + part;
-                if (!client.Exists(path))
-                {
-                    client.CreateDirectory(path);
-                }
-            }
-        }
-
         private bool IsTransient(Exception ex)
         {
+            // Permanent server-side failures must NOT be retried - retrying just wastes time with
+            // backoff delays and never succeeds (e.g. permission denied, no such path/file).
+            if (ex is SftpPermissionDeniedException || ex is SftpPathNotFoundException)
+            {
+                return false;
+            }
+
             // Treat network/connection/IO disruptions as transient and retryable.
             return ex is System.Net.Sockets.SocketException
                 || ex is TimeoutException
